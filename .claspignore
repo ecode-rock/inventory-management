@@ -1,0 +1,17 @@
+# Ignore files that shouldn't be pushed to Apps Script
+**/**
+!Code.gs
+!Sidebar.html
+!appsscript.json
+
+# Don't push these to Apps Script
+.git/**
+.gitignore
+README.md
+CLAUDE.md
+package.json
+package-lock.json
+node_modules/**
+*.md
+p1.txt
+p2.txt

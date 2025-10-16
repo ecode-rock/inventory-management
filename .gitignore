@@ -1,0 +1,28 @@
+# clasp
+.clasp.json
+
+# Node
+node_modules/
+npm-debug.log
+package-lock.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temp files
+*.tmp
+*.bak
+p1.txt
+p2.txt
+
+# Environment
+.env
+.env.local
