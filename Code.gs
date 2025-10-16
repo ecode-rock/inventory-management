@@ -3,6 +3,26 @@
  * Fixed version with working form opener and complete features
  */
 
+// ========================================
+// CONFIGURATION
+// ========================================
+
+/**
+ * TEMPLATE DOCUMENT ID
+ * To use a template:
+ * 1. Create a Google Doc with your desired formatting
+ * 2. Add placeholders: {{BOX_NUMBER}}, {{DATE}}, {{TOTAL_ITEMS}}, {{LOCATION}}, {{QR_CODE}}
+ * 3. Copy the document ID from the URL (the part after /d/)
+ * 4. Paste it below
+ *
+ * Leave empty ("") to create documents from scratch (current behavior)
+ */
+const TEMPLATE_DOC_ID = "";
+
+// ========================================
+// MAIN FUNCTIONS
+// ========================================
+
 // This function runs automatically when the spreadsheet is opened
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
@@ -16,6 +36,9 @@ function onOpen() {
     .addSubMenu(ui.createMenu('📦 Box Reports')
       .addItem('Generate Single Box Report', 'promptForBoxReport')
       .addItem('Generate All Box Reports', 'generateAllBoxReports'))
+    .addSubMenu(ui.createMenu('🎨 Templates')
+      .addItem('Create Sample Template', 'createSampleTemplate')
+      .addItem('About Templates', 'showTemplateHelp'))
     .addSubMenu(ui.createMenu('🔧 Utilities')
       .addItem('Process New Images', 'processImages')
       .addItem('Check Data Integrity', 'checkData'))
@@ -152,13 +175,16 @@ function generateQRCode(url, boxNumber) {
     // Get or create QR code folder
     const qrFolderId = getOrCreateFolder('qr code');
 
-    // Use Google Chart API to generate QR code
+    // Use QuickChart.io API to generate QR code (replacement for deprecated Google Chart API)
     const qrSize = 300;
-    const qrUrl = 'https://chart.googleapis.com/chart?cht=qr&chs=' + qrSize + 'x' + qrSize + '&chl=' + encodeURIComponent(url);
+    const qrUrl = 'https://quickchart.io/qr?text=' + encodeURIComponent(url) + '&size=' + qrSize;
 
     // Fetch the QR code image
     const response = UrlFetchApp.fetch(qrUrl);
     const blob = response.getBlob();
+
+    // Set proper content type for PNG image
+    blob.setContentType('image/png');
 
     // Set filename
     const now = new Date();
@@ -173,7 +199,8 @@ function generateQRCode(url, boxNumber) {
     return {
       id: file.getId(),
       url: file.getUrl(),
-      downloadUrl: 'https://drive.google.com/uc?export=download&id=' + file.getId()
+      downloadUrl: 'https://drive.google.com/uc?export=download&id=' + file.getId(),
+      qrApiUrl: qrUrl  // Return the original QuickChart URL for direct fetching
     };
 
   } catch (error) {
@@ -192,42 +219,92 @@ function createBoxDocument(boxNumber, items) {
     const dateStr = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm');
     const docName = 'Box ' + boxNumber + ' - Report (' + dateStr + ')';
 
-    const doc = DocumentApp.create(docName);
-    const body = doc.getBody();
-    body.clear();
+    let doc, body;
 
-    // Add header
-    const header = body.appendParagraph('📦 Storage Box ' + boxNumber + ' - Inventory Report');
-    header.setHeading(DocumentApp.ParagraphHeading.HEADING1);
-    header.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
-
-    // Add metadata
-    body.appendParagraph('Generated: ' + dateStr);
-    body.appendParagraph('Total Items: ' + items.length);
-    body.appendParagraph('Location: ' + items[0].room);
+    // Check if using template or creating from scratch
+    if (TEMPLATE_DOC_ID && TEMPLATE_DOC_ID.trim() !== "") {
+      // TEMPLATE MODE: Copy template and modify
+      const templateFile = DriveApp.getFileById(TEMPLATE_DOC_ID);
+      const newFile = templateFile.makeCopy(docName);
+      doc = DocumentApp.openById(newFile.getId());
+      body = doc.getBody();
+    } else {
+      // FROM SCRATCH MODE: Create new document
+      doc = DocumentApp.create(docName);
+      body = doc.getBody();
+      body.clear();
+    }
 
     // Generate QR code for this document
     const docUrl = doc.getUrl();
     const qrCode = generateQRCode(docUrl, boxNumber);
 
-    if (qrCode) {
-      body.appendParagraph('');
-      const qrPara = body.appendParagraph('QR Code (scan to open this report):');
-      qrPara.setBold(true);
+    if (TEMPLATE_DOC_ID && TEMPLATE_DOC_ID.trim() !== "") {
+      // TEMPLATE MODE: Replace placeholders
+      body.replaceText('{{BOX_NUMBER}}', boxNumber);
+      body.replaceText('{{DATE}}', dateStr);
+      body.replaceText('{{TOTAL_ITEMS}}', items.length.toString());
+      body.replaceText('{{LOCATION}}', items[0].room);
 
-      try {
-        // Fetch and insert QR code image
-        const qrImageBlob = UrlFetchApp.fetch(qrCode.downloadUrl).getBlob();
-        const qrImage = body.appendImage(qrImageBlob);
-        qrImage.setWidth(200);
-        qrImage.setHeight(200);
-      } catch (error) {
-        console.error('Error inserting QR code image:', error);
-        body.appendParagraph('QR Code Link: ' + qrCode.url);
+      // Find and replace QR_CODE placeholder with actual QR code image
+      if (qrCode) {
+        const searchResult = body.findText('{{QR_CODE}}');
+        if (searchResult) {
+          const element = searchResult.getElement();
+          const parent = element.getParent();
+
+          try {
+            // Insert QR code image after the placeholder text - fetch directly from QuickChart
+            const qrImageBlob = UrlFetchApp.fetch(qrCode.qrApiUrl).getBlob();
+            qrImageBlob.setContentType('image/png');
+            const qrImage = parent.asParagraph().appendInlineImage(qrImageBlob);
+            qrImage.setWidth(200);
+            qrImage.setHeight(200);
+
+            // Remove the placeholder text
+            element.asText().setText('');
+          } catch (error) {
+            console.error('Error inserting QR code image:', error);
+            body.replaceText('{{QR_CODE}}', 'QR Code Link: ' + qrCode.url);
+          }
+        }
+      } else {
+        body.replaceText('{{QR_CODE}}', '(QR code generation failed)');
       }
-    }
 
-    body.appendHorizontalRule();
+    } else {
+      // FROM SCRATCH MODE: Build document structure
+      // Add header
+      const header = body.appendParagraph('📦 Storage Box ' + boxNumber + ' - Inventory Report');
+      header.setHeading(DocumentApp.ParagraphHeading.HEADING1);
+      header.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+
+      // Add metadata
+      body.appendParagraph('Generated: ' + dateStr);
+      body.appendParagraph('Total Items: ' + items.length);
+      body.appendParagraph('Location: ' + items[0].room);
+
+      // Add QR code
+      if (qrCode) {
+        body.appendParagraph('');
+        const qrPara = body.appendParagraph('QR Code (scan to open this report):');
+        qrPara.setBold(true);
+
+        try {
+          // Fetch and insert QR code image - fetch directly from QuickChart
+          const qrImageBlob = UrlFetchApp.fetch(qrCode.qrApiUrl).getBlob();
+          qrImageBlob.setContentType('image/png');
+          const qrImage = body.appendImage(qrImageBlob);
+          qrImage.setWidth(200);
+          qrImage.setHeight(200);
+        } catch (error) {
+          console.error('Error inserting QR code image:', error);
+          body.appendParagraph('QR Code Link: ' + qrCode.url);
+        }
+      }
+
+      body.appendHorizontalRule();
+    }
 
     // Create summary statistics
     const stats = getBoxStatistics(items);
@@ -583,6 +660,87 @@ function emailBoxSummary(boxNumber, recipientEmail) {
   }
 }
 
+/**
+ * Creates a sample template document to help users get started
+ * This creates a properly formatted template with all placeholders
+ */
+function createSampleTemplate() {
+  try {
+    const doc = DocumentApp.create('Box Report Template - SAMPLE');
+    const body = doc.getBody();
+    body.clear();
+
+    // Add header with placeholder
+    const header = body.appendParagraph('📦 Storage Box {{BOX_NUMBER}} - Inventory Report');
+    header.setHeading(DocumentApp.ParagraphHeading.HEADING1);
+    header.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+
+    // Add metadata section
+    body.appendParagraph('Generated: {{DATE}}');
+    body.appendParagraph('Total Items: {{TOTAL_ITEMS}}');
+    body.appendParagraph('Location: {{LOCATION}}');
+    body.appendParagraph('');
+
+    // QR Code section
+    const qrPara = body.appendParagraph('QR Code (scan to open this report):');
+    qrPara.setBold(true);
+    body.appendParagraph('{{QR_CODE}}');
+    body.appendParagraph('');
+
+    body.appendHorizontalRule();
+
+    // Instructions
+    const instructions = body.appendParagraph('Template Instructions:');
+    instructions.setHeading(DocumentApp.ParagraphHeading.HEADING2);
+    instructions.setForegroundColor('#FF0000');
+
+    const instructionsList = body.appendParagraph('1. Customize this template with your formatting, colors, fonts, and logo');
+    instructionsList.setForegroundColor('#FF0000');
+    body.appendParagraph('2. Keep the placeholders: {{BOX_NUMBER}}, {{DATE}}, {{TOTAL_ITEMS}}, {{LOCATION}}, {{QR_CODE}}').setForegroundColor('#FF0000');
+    body.appendParagraph('3. Copy this document\'s ID from the URL').setForegroundColor('#FF0000');
+    body.appendParagraph('4. Paste the ID in Code.gs where TEMPLATE_DOC_ID = ""').setForegroundColor('#FF0000');
+    body.appendParagraph('5. Delete these red instructions before using').setForegroundColor('#FF0000');
+
+    body.appendHorizontalRule();
+
+    // Note about dynamic content
+    const note = body.appendParagraph('Note: Statistics tables and item lists will be added automatically below this line');
+    note.setItalic(true);
+    note.setForegroundColor('#666666');
+
+    // Save to folder
+    const folderId = getOrCreateFolder('Templates');
+    const file = DriveApp.getFileById(doc.getId());
+    DriveApp.getFolderById(folderId).addFile(file);
+    DriveApp.getRootFolder().removeFile(file);
+
+    const ui = SpreadsheetApp.getUi();
+    const result = ui.alert(
+      'Template Created!',
+      'Sample template created successfully!\n\n' +
+      'Document ID: ' + doc.getId() + '\n\n' +
+      'Click OK to open the template and customize it.',
+      ui.ButtonSet.OK_CANCEL
+    );
+
+    if (result == ui.Button.OK) {
+      const html = HtmlService.createHtmlOutput(
+        '<script>window.open("' + doc.getUrl() + '", "_blank");google.script.host.close();</script>'
+      );
+      ui.showModalDialog(html, 'Opening template...');
+    }
+
+    return {
+      id: doc.getId(),
+      url: doc.getUrl()
+    };
+
+  } catch (error) {
+    console.error('Error creating template:', error);
+    throw error;
+  }
+}
+
 // Placeholder functions
 function processImages() {
   SpreadsheetApp.getActiveSpreadsheet().toast('Feature coming soon: Process images', 'Info', 3);
@@ -590,6 +748,46 @@ function processImages() {
 
 function checkData() {
   SpreadsheetApp.getActiveSpreadsheet().toast('Feature coming soon: Check data integrity', 'Info', 3);
+}
+
+function showTemplateHelp() {
+  const currentTemplateId = TEMPLATE_DOC_ID && TEMPLATE_DOC_ID.trim() !== "" ? TEMPLATE_DOC_ID : "Not configured";
+  const mode = TEMPLATE_DOC_ID && TEMPLATE_DOC_ID.trim() !== "" ? "Template Mode" : "From Scratch Mode";
+
+  const htmlContent = `
+    <div style="font-family: Arial, sans-serif; padding: 20px;">
+      <h2>🎨 Document Templates</h2>
+      <p><strong>Current Mode:</strong> ${mode}</p>
+      <p><strong>Template ID:</strong> <span style="font-family: monospace; font-size: 11px;">${currentTemplateId}</span></p>
+      <hr>
+      <h3>How to Use Templates:</h3>
+      <ol>
+        <li>Click <strong>Templates > Create Sample Template</strong></li>
+        <li>Customize the template with your branding</li>
+        <li>Copy the document ID from the URL</li>
+        <li>Open <strong>Extensions > Apps Script</strong></li>
+        <li>Edit Code.gs and paste ID in TEMPLATE_DOC_ID</li>
+        <li>Save and test!</li>
+      </ol>
+      <hr>
+      <h3>Available Placeholders:</h3>
+      <ul style="font-family: monospace; font-size: 12px;">
+        <li>{{BOX_NUMBER}}</li>
+        <li>{{DATE}}</li>
+        <li>{{TOTAL_ITEMS}}</li>
+        <li>{{LOCATION}}</li>
+        <li>{{QR_CODE}}</li>
+      </ul>
+      <hr>
+      <p style="color: #666; font-size: 11px;"><strong>Tip:</strong> Leave TEMPLATE_DOC_ID empty to generate documents from scratch (default behavior)</p>
+    </div>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(htmlContent)
+    .setWidth(450)
+    .setHeight(500);
+
+  SpreadsheetApp.getUi().showModalDialog(htmlOutput, 'Template Help');
 }
 
 function showAbout() {
@@ -606,6 +804,7 @@ function showAbout() {
         <li>Email summaries</li>
         <li>View recent item images</li>
         <li>QR codes for quick report access</li>
+        <li>Custom document templates</li>
       </ul>
       <hr>
       <p style="color: #666; font-size: 12px;">Built with Google Apps Script</p>
@@ -614,7 +813,7 @@ function showAbout() {
 
   const htmlOutput = HtmlService.createHtmlOutput(htmlContent)
     .setWidth(400)
-    .setHeight(300);
+    .setHeight(350);
 
   SpreadsheetApp.getUi().showModalDialog(htmlOutput, 'About Inventory System');
 }
